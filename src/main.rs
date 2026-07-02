@@ -1,7 +1,7 @@
 use anyhow::bail;
 use config::Config;
 use lapin::{Channel, Connection, ConnectionProperties};
-use lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions};
+use lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicNackOptions, BasicPublishOptions};
 use std::time::Duration;
 use lapin::types::FieldTable;
 use lapin::uri::{AMQPAuthority, AMQPQueryString, AMQPScheme, AMQPUri, AMQPUserInfo};
@@ -115,15 +115,23 @@ async fn main() -> anyhow::Result<()> {
             let client = client.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = process_message(&channel, &pool, &client, &payload).await {
-                    error!("Cannot process message: {:?}", e);
-                    return;
+                match process_message(&channel, &pool, &client, &payload).await {
+                    Ok(()) => {
+                        if let Err(e) = delivery.ack(BasicAckOptions::default()).await {
+                            error!("Failed to ack message: {:?}", e);
+                        }
+                        info!("Message processing completed");
+                    }
+                    Err(e) => {
+                        error!("Cannot process message: {:?}", e);
+                        if let Err(nack_error) = delivery
+                            .nack(BasicNackOptions { requeue: true, ..Default::default() })
+                            .await
+                        {
+                            error!("Failed to nack message: {:?}", nack_error);
+                        }
+                    }
                 }
-
-                if let Err(e) = delivery.ack(BasicAckOptions::default()).await {
-                    error!("Failed to ack message: {:?}", e);
-                }
-                info!("Message processing completed");
             });
         }
     }
@@ -196,10 +204,12 @@ async fn process_message(
             .await?;
         info!("Task finished succesfully")
     } else {
-        if let Err(e) = send_to_retry_or_failed(channel, &task_o.task_id, t.attempt_count+1, t.max_attempts, None).await {
+        let error_message = result.as_ref().err().map(|e| e.to_string());
+        if let Err(e) = send_to_retry_or_failed(channel, &task_o.task_id, t.attempt_count + 1, t.max_attempts, error_message).await {
             sqlx::query!("update tasks set updated_at=now(), status = 'failed', attempt_count = attempt_count + 1 where id = $1", &task_o.task_id)
                 .execute(&mut *tx)
                 .await?;
+            warn!("Failed to publish retry/failure message for task {}: {:?}", task_o.task_id, e);
         } else {
             sqlx::query!("update tasks set updated_at=now(), attempt_count = attempt_count + 1 where id = $1", &task_o.task_id)
                 .execute(&mut *tx)
@@ -231,18 +241,21 @@ async fn make_request(
         _ => bail!("Method not found")
 
     };
-    builder = if let Ok(headers) = headers {
-        builder.headers(headers)
-    } else {
-        builder
+    builder = match headers {
+        Ok(headers) => builder.headers(headers),
+        Err(e) => {
+            warn!("Failed to build headers for request to {}: {:?}", url, e);
+            builder
+        }
     };
     builder = if let Some(body) = body {
         builder.body(body)
     } else {
         builder
     };
-    let data = builder.send().await?;
-    Ok(data.text().await?)
+    let response = builder.send().await?;
+    let response = response.error_for_status()?;
+    Ok(response.text().await?)
 }
 
 fn json_to_headermap(json_headers: Option<Value>) -> anyhow::Result<HeaderMap> {
