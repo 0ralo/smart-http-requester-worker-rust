@@ -2,6 +2,7 @@ use anyhow::bail;
 use config::Config;
 use lapin::{Channel, Connection, ConnectionProperties};
 use lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions};
+use std::time::Duration;
 use lapin::types::FieldTable;
 use lapin::uri::{AMQPAuthority, AMQPQueryString, AMQPScheme, AMQPUri, AMQPUserInfo};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -20,6 +21,7 @@ pub mod configs;
 mod schemas;
 
 const DLX_EXCHANGE: &str = "tasks.dlx";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_QUEUES: [&str; 7] = [
     "tasks.retry.1s",
     "tasks.retry.2s",
@@ -74,6 +76,9 @@ async fn main() -> anyhow::Result<()> {
         .max_connections(5)
         .connect_with(options)
         .await?;
+    let client = reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()?;
     let uri = AMQPUri {
         scheme: AMQPScheme::AMQP,
         authority: AMQPAuthority {
@@ -103,14 +108,23 @@ async fn main() -> anyhow::Result<()> {
     while let Some(delivery_result) = consumer.next().await {
         if let Ok(message) = delivery_result {
             info!("got message {:?}", String::from_utf8_lossy(&message.data));
-            if let Err(e) = process_message(&channel, &pool, &message.data).await {
-                error!("Cannot process message: {:?}", e);
-                continue;
-            }
-            if let Err(e) = message.ack(BasicAckOptions::default()).await {
-                error!("Failed to ack message: {:?}", e);
-            }
-            info!("Message processing completed");
+            let payload = message.data.clone();
+            let delivery = message;
+            let channel = channel.clone();
+            let pool = pool.clone();
+            let client = client.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) = process_message(&channel, &pool, &client, &payload).await {
+                    error!("Cannot process message: {:?}", e);
+                    return;
+                }
+
+                if let Err(e) = delivery.ack(BasicAckOptions::default()).await {
+                    error!("Failed to ack message: {:?}", e);
+                }
+                info!("Message processing completed");
+            });
         }
     }
     Ok(())
@@ -157,7 +171,12 @@ async fn send_to_retry_or_failed(
     Ok(())
 }
 
-async fn process_message(channel: &Channel, pool: &Pool<Postgres>, message: &[u8]) -> anyhow::Result<()> {
+async fn process_message(
+    channel: &Channel,
+    pool: &Pool<Postgres>,
+    client: &reqwest::Client,
+    message: &[u8],
+) -> anyhow::Result<()> {
     let data = std::str::from_utf8(message)?;
     let task_o = serde_json::from_str::<RabbitmqTask>(data)?;
     let mut tx = pool.begin().await?;
@@ -169,7 +188,7 @@ async fn process_message(channel: &Channel, pool: &Pool<Postgres>, message: &[u8
         bail!("Failed to find task")
     };
 
-    let result = make_request(t.url, t.method, t.headers, t.body).await;
+    let result = make_request(client, t.url, t.method, t.headers, t.body).await;
 
     if let Ok(r) = result {
         sqlx::query!("update tasks set status='done', attempt_count = attempt_count + 1, updated_at=now(), result=jsonb_build_object('result', $1::text) where id = $2", r, &task_o.task_id)
@@ -195,13 +214,13 @@ async fn process_message(channel: &Channel, pool: &Pool<Postgres>, message: &[u8
 
 
 async fn make_request(
+    client: &reqwest::Client,
     url: String,
     method: String,
     headers: Option<Value>,
     body: Option<String>,
 ) -> anyhow::Result<String> {
     info!("Called make_request");
-    let client = reqwest::Client::new();
     let headers = json_to_headermap(headers);
     let mut builder = match method.as_str() {
         "GET" => client.get(&url),
