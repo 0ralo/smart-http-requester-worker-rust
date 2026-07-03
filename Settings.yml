@@ -11,3 +11,6 @@ rabbitmq:
   user: "guest"
   password: "guest"
   vhost: "/"
+
+worker:
+  name: "worker-rust-1"
