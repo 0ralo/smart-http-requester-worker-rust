@@ -152,6 +152,9 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             });
+        } else {
+            let err = delivery_result.unwrap_err();
+            error!("Error while delivering result from RMQ: {}", err); //when rmq connection is lost while program is running
         }
     }
     Ok(())
