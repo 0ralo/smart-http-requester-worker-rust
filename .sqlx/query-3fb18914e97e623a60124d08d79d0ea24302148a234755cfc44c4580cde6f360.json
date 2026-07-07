@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tasks set status='done', attempt_count = attempt_count + 1, updated_at=now(), result=jsonb_build_object('result', $1::text) where id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3fb18914e97e623a60124d08d79d0ea24302148a234755cfc44c4580cde6f360"
+}
