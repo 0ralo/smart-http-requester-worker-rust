@@ -13,6 +13,7 @@ use sqlx::{ConnectOptions, Pool, Postgres};
 use tracing::{error, info, warn};
 use tracing::log::LevelFilter;
 use tracing_subscriber::{fmt, EnvFilter};
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 use crate::configs::Settings;
 use crate::schemas::{RabbitmqTask, Task};
@@ -103,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
             FieldTable::default(),
         )
         .await?;
+    let semaphore = Semaphore::new(5);
 
     info!("started");
     while let Some(delivery_result) = consumer.next().await {
@@ -113,8 +115,10 @@ async fn main() -> anyhow::Result<()> {
             let channel = channel.clone();
             let pool = pool.clone();
             let client = client.clone();
+            let permit = semaphore.clone().acquire_owned().await?;
 
             tokio::spawn(async move {
+                let _permit = permit;
                 match process_message(&channel, &pool, &client, &payload).await {
                     Ok(()) => {
                         if let Err(e) = delivery.ack(BasicAckOptions::default()).await {
