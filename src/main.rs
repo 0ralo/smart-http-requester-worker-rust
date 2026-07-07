@@ -1,3 +1,5 @@
+use std::sync::Arc;
+use std::thread::sleep;
 use anyhow::bail;
 use config::Config;
 use lapin::{Channel, Connection, ConnectionProperties};
@@ -104,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
             FieldTable::default(),
         )
         .await?;
-    let semaphore = Semaphore::new(5);
+    let semaphore = Arc::from(Semaphore::new(5));
 
     info!("started");
     while let Some(delivery_result) = consumer.next().await {
