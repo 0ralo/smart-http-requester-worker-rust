@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 pub struct Settings{
     pub database: PostgresSettings,
-    pub rabbitmq: RabbitmqSettings
+    pub rabbitmq: RabbitmqSettings,
+    pub worker: Worker
 }
 
 #[derive(Serialize, Deserialize)]
@@ -23,4 +24,10 @@ pub struct RabbitmqSettings {
     pub password: String,
     pub vhost: String,
 }
+
+#[derive(Serialize, Deserialize)]
+pub struct Worker {
+    pub name: String,
+}
+
 

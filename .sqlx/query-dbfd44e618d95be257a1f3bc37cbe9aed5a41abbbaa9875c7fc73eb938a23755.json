@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tasks set updated_at=now(), attempt_count = attempt_count + 1 where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dbfd44e618d95be257a1f3bc37cbe9aed5a41abbbaa9875c7fc73eb938a23755"
+}
